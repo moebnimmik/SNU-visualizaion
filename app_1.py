@@ -1,160 +1,84 @@
 import streamlit as st
 import yfinance as yf
-import plotly.graph_objects as go
 import pandas as pd
-import numpy as np
+import plotly.express as px
 
 # Streamlit 앱 타이틀
-st.title('주식 배당금 및 재투자 분석')
+st.title('나만의 월 배당 포트폴리오 구축')
 
-# 사용자 입력 받기
-ticker = st.text_input('주식 티커 기호를 입력하세요 (예: AAPL):', 'AAPL')
+# 포트폴리오를 저장할 리스트
+if 'portfolio' not in st.session_state:
+    st.session_state.portfolio = []
 
-# 기간 선택기 추가
-start_date = st.date_input("시작 날짜", pd.to_datetime("2015-01-01"))
-end_date = st.date_input("종료 날짜", pd.to_datetime("2024-01-01"))
+# 주식 검색 및 주가 정보 가져오기
+ticker = st.text_input('주식 티커를 입력하세요 (예: AAPL, MSFT):')
+stock_price = None  # 주가를 저장할 변수 초기화
 
+# 주식 추가 기능
 if ticker:
-    # 데이터 다운로드
-    stock = yf.Ticker(ticker)
-    stock_data = stock.history(start=start_date, end=end_date, actions=True)
-
-    # 데이터 확인
-    if stock_data.empty:
-        st.error(f"티커 '{ticker}'에 대한 데이터가 없습니다.")
-    else:
-        # 배당금 데이터 추출
-        if 'Dividends' in stock_data.columns:
-            dividends = stock_data['Dividends'].fillna(0)
+    try:
+        stock = yf.Ticker(ticker.upper())
+        dividends = stock.dividends  # 배당금 데이터 가져오기
+        if not dividends.empty:
+            st.write(f'{ticker.upper()} 주식 배당금 데이터가 있습니다.')
+            # 포트폴리오에 추가
+            if ticker.upper() not in [s['ticker'] for s in st.session_state.portfolio]:
+                st.session_state.portfolio.append({'ticker': ticker.upper(), 'dividends': dividends})
+                st.success(f'{ticker.upper()} 주식이 포트폴리오에 추가되었습니다.')
+            else:
+                st.warning(f'{ticker.upper()} 주식이 이미 포트폴리오에 있습니다.')
         else:
-            st.warning("이 주식에 대한 배당금 데이터가 없습니다.")
-            dividends = pd.Series(index=stock_data.index, data=0)
-        
-        # 배당금이 있는 데이터만 필터링
-        dividend_data = dividends[dividends > 0]
+            st.error(f'{ticker.upper()} 주식에 대한 배당금 데이터가 없습니다.')
+    except Exception as e:
+        st.error(f"데이터를 가져오는 중 오류 발생: {e}")
 
-        if dividend_data.empty:
-            st.warning("이 주식에 대한 배당금 데이터가 없습니다.")
-        else:
-            # 주가와 배당금 데이터 시뮬레이션
-            initial_shares = 1  # 초기 투자 시 주식 수
-            shares = pd.Series(index=stock_data.index, data=np.nan)
-            investment_value = pd.Series(index=stock_data.index, data=np.nan)
-            
-            shares.iloc[0] = initial_shares
-            investment_value.iloc[0] = stock_data['Close'].iloc[0] * initial_shares
+# 포트폴리오에 추가된 주식 리스트 보여주기
+st.subheader('포트폴리오')
+if st.session_state.portfolio:
+    # 각 주식의 배당금 정보를 모아서 하나의 DataFrame으로 구성
+    portfolio_data = []
+    for stock in st.session_state.portfolio:
+        dividends = stock['dividends']
+        for date, dividend in dividends.items():
+            # 월을 1~12로 변환 (날짜의 월만 추출)
+            month = pd.to_datetime(date).month
+            portfolio_data.append({
+                'ticker': stock['ticker'],
+                'month': month,
+                'dividend': dividend
+            })
+    
+    df = pd.DataFrame(portfolio_data)
 
-            for i in range(1, len(stock_data)):
-                # 이전 값 가져오기
-                prev_shares = shares.iloc[i-1]
-                
-                # 배당금 재투자
-                dividend = dividends.iloc[i]
-                if dividend > 0:
-                    new_shares = dividend / stock_data['Close'].iloc[i]
-                    shares.iloc[i] = prev_shares + new_shares
-                else:
-                    shares.iloc[i] = prev_shares
-                
-                # 재투자 후 총 투자 가치
-                investment_value.iloc[i] = shares.iloc[i] * stock_data['Close'].iloc[i]
+    # X축에 12개월을 명시적으로 표시하도록 설정
+    months = [str(i) for i in range(1, 13)]  # 1월부터 12월까지
+    df['month'] = df['month'].astype(str)  # 월을 문자열로 변환하여 시각화에 사용
 
-            # 그래프 생성
-            fig = go.Figure()
+    # Plotly로 월별 배당금 누적 막대그래프 그리기
+    fig = px.bar(
+        df, 
+        x='month', 
+        y='dividend', 
+        color='ticker',
+        hover_data=['ticker', 'dividend'],
+        labels={'month': '월', 'dividend': '배당금 (₩)'},
+        title='포트폴리오의 월별 배당금 흐름',
+        barmode='stack',  # 막대를 누적하여 표시
+        category_orders={"month": months}  # X축에 1~12까지 표시
+    )
+    
+    st.plotly_chart(fig)
 
-            # 주가 시계열 (종가) - 선 아래 색칠
-            fig.add_trace(go.Scatter(
-                x=stock_data.index,
-                y=stock_data['Close'],
-                mode='lines',
-                name='종가',
-                line=dict(color='blue', width=1),  # 얇은 실선
-                fill='tozeroy',  # 선 아래 색칠
-                fillcolor='rgba(0, 0, 255, 0.3)',  # 색상과 투명도 설정
-                yaxis='y1',
-                hovertemplate='주가: %{y:.2f}<extra></extra>'
-            ))
+    # 오른쪽에 포트폴리오 목록 표시
+    st.sidebar.subheader('포트폴리오 목록')
+    tickers_in_portfolio = [stock['ticker'] for stock in st.session_state.portfolio]
+    st.sidebar.write(tickers_in_portfolio)
 
-            # 배당금 시계열 (막대그래프) - 굵기 조정
-            fig.add_trace(go.Bar(
-                x=dividend_data.index,
-                y=dividend_data,
-                name='배당금',
-                marker=dict(color='orange'),
-                opacity=0.6,  # 투명도 조정
-                width=15,  # 막대 너비 조정 (기존 10에서 15로 변경)
-                yaxis='y2',
-                hovertemplate='배당금: %{y:.2f}<extra></extra>'
-            ))
-
-            # 재투자 후 주가 시계열 - 선 아래 색칠 및 색상 조정
-            fig.add_trace(go.Scatter(
-                x=investment_value.index,
-                y=investment_value,
-                mode='lines',
-                name='재투자 가치',
-                line=dict(color='green', width=1),  # 얇은 실선
-                fill='tozeroy',  # 선 아래 색칠
-                fillcolor='rgba(0, 255, 0, 0.3)',  # 색상과 투명도 설정
-                yaxis='y1',
-                hovertemplate='재투자 가치: %{y:.2f}<extra></extra>'
-            ))
-
-            # 그래프 레이아웃 설정
-            fig.update_layout(
-                title=f'{ticker} 주가, 배당금 및 재투자 가치',
-                xaxis_title='날짜',
-                yaxis_title='주가',
-                yaxis=dict(
-                    title='주가',
-                    titlefont=dict(color='black'),
-                    tickfont=dict(color='black'),
-                    range=[0, stock_data['Close'].max() * 1.5],  # 좌측 y축 범위 설정 (조정)
-                    autorange=False,
-                    title_standoff=20,  # 제목과 축 사이의 거리
-                    tickangle=-45  # x축 레이블 회전
-                ),
-                yaxis2=dict(
-                    title='배당금',
-                    titlefont=dict(color='black'),
-                    tickfont=dict(color='black'),
-                    overlaying='y',
-                    side='right',
-                    range=[0, 3],  # 오른쪽 y축 범위 설정 (3으로 조정)
-                    title_standoff=20  # 제목과 축 사이의 거리
-                ),
-                hovermode='x unified',
-                barmode='overlay',  # 막대그래프와 선그래프 겹치게 표현
-                height=800,  # 그래프 높이 설정
-                margin=dict(t=50, b=150, l=70, r=70),  # 여백 조정
-                xaxis=dict(
-                    tickangle=-45,  # x축 레이블 회전
-                    tickfont=dict(size=10, color='black')  # x축 레이블 색상 조정
-                )
-            )
-
-            # 배경과 텍스트 색상 조정
-            fig.update_layout(
-                plot_bgcolor='white',
-                paper_bgcolor='lightgray',
-                font=dict(size=12, color='black')
-            )
-
-            # 그래프에 수익 차이 표시 기능 추가
-            fig.update_traces(
-                hovertemplate='<b>날짜</b>: %{x}<br>' +
-                              '<b>주가</b>: $%{y:.2f}<br>' +
-                              '<b>재투자 가치</b>: $%{customdata[0]:.2f}<br>' +
-                              '<b>수익 차이</b>: $%{customdata[1]:.2f}<br>' +
-                              '<extra></extra>',
-                selector=dict(mode='lines+markers')
-            )
-
-            # 커스텀 데이터 추가: [재투자 후 가치, 수익 차이]
-            fig.update_traces(customdata=np.stack([
-                investment_value.values,
-                investment_value.values - stock_data['Close'].values
-            ], axis=-1))
-
-            # 그래프 보여주기
-            st.plotly_chart(fig)
+    # 주식 제거 기능 추가
+    stock_to_remove = st.sidebar.selectbox('제거할 주식을 선택하세요:', tickers_in_portfolio)
+    if st.sidebar.button('제거'):
+        st.session_state.portfolio = [stock for stock in st.session_state.portfolio if stock['ticker'] != stock_to_remove]
+        st.sidebar.success(f'{stock_to_remove} 주식이 포트폴리오에서 제거되었습니다.')
+        st.experimental_rerun()  # 변경사항을 즉시 반영하기 위해 페이지를 다시 로드합니다.
+else:
+    st.info('포트폴리오에 주식을 추가하세요.')
